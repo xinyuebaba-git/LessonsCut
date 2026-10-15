@@ -12,7 +12,9 @@ class FakeReviewProvider:
     def __init__(self,*args):pass
     def chat(self,role,prompt,images):
         assert role=='supervisor'
-        codes=['title_text','presenter_text','no_extra_text','not_clipped','style_match'] if prompt.startswith('核对标题图片') else ['intro_identity','title_text','presenter_text','no_extra_text','not_clipped','lecture_start','lecture_body','lecture_end','no_black_frame']
+        if prompt.startswith('核对标题图片'):codes=['title_text','presenter_text','no_extra_text','not_clipped','style_match']
+        elif prompt.startswith('成片片头标题复核'):codes=['intro_identity','title_text','presenter_text','no_extra_text','not_clipped']
+        else:codes=['lecture_start','lecture_body','lecture_end','no_black_frame']
         return {'decision':'pass','checks':[{'code':c,'decision':'pass','reason':'synthetic fixture'} for c in codes],'issues':[],'limits':'synthetic samples only'}
 
 

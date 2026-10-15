@@ -40,12 +40,15 @@ def test_idempotency_and_conflict(client):
 def test_revision_fencing_and_delivery_invalidated(client):
     c,app=client;jid=new_job(c)
     with app.state.store.session() as s:
-        job=s.get(Job,jid);job.state="DELIVERED";job.result=encode({"delivery_path":"output/old.mp4"})
+        job=s.get(Job,jid);job.state="DELIVERED";job.result=encode({"delivery_path":"output/old.mp4","technical":{"full_decode":True},"plan_review":{"decision":"pass"},"automatic_plan":{"title":"旧标题"},"transcript":{"segments":[]},"evidence":[]})
     body={"base_revision":1,"plan":{"title":"课程", "lecture":{"start":1,"end":3},"intro_asset_id":"intro","reason":"人工核对"}}
     assert c.post(f'/api/v1/jobs/{jid}/revisions',json=body).status_code==202
     assert c.post(f'/api/v1/jobs/{jid}/revisions',json=body).status_code==409
     assert c.get(f'/api/v1/jobs/{jid}/delivery').status_code==404
     assert c.get(f'/api/v1/jobs/{jid}').json()['revision']==2
+    report=c.get(f'/api/v1/jobs/{jid}/report').json()['evidence_report']
+    assert not {'delivery_path','technical','plan_review','automatic_plan'}&report.keys()
+    assert report['source_analysis_revision']==1 and 'transcript' in report
 
 
 def test_active_revision_rejected(client):

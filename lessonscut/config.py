@@ -20,7 +20,16 @@ class Settings(BaseSettings):
     dashscope_api_key: SecretStr = SecretStr("")
     qwen_image_model: str = "qwen-image-3.0"
     qwen_image_size: str = "1920x1080"
-    max_calls_per_job: int = Field(default=48, ge=1, le=500, validation_alias="LESSONSCUT_MAX_CALLS_PER_JOB")
+    max_calls_per_job: int = Field(default=160, ge=1, le=500, validation_alias="LESSONSCUT_MAX_CALLS_PER_JOB")
+    automatic_plan_approval: bool = Field(default=True, validation_alias="LESSONSCUT_AUTOMATIC_PLAN_APPROVAL")
+    default_intro_asset_id: str | None = Field(default=None, validation_alias="LESSONSCUT_DEFAULT_INTRO_ASSET_ID")
+    asr_backend: str = Field(default="disabled", pattern="^(disabled|local|ssh)$")
+    asr_ssh_host: str = ""
+    asr_python: str = "/mnt/sdc/apps/lessonscut-asr/venv/bin/python"
+    asr_worker_path: str = "/mnt/sdc/apps/lessonscut-asr/asr_worker.py"
+    asr_model_path: str = "/mnt/sdc/models/lessonscut-asr/large-v3-turbo"
+    asr_threads: int = Field(default=16, ge=1, le=64)
+    asr_timeout_seconds: int = Field(default=3600, ge=30)
     encoder: str = Field(default="libx264", pattern="^(libx264|h264_nvenc)$", validation_alias="LESSONSCUT_ENCODER")
 
     def prepare(self):

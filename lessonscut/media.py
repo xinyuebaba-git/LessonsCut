@@ -44,7 +44,8 @@ def video_info(path):
 def extract_frame(path, seconds, target):
     target=Path(target)
     target.parent.mkdir(parents=True,exist_ok=True)
-    run(["ffmpeg","-v","error","-i",str(path),"-ss",str(seconds),"-frames:v","1","-vf","scale=1280:-2","-n",str(target)],120)
+    # These are derived review frames in a revision work directory; refresh on resume.
+    run(["ffmpeg","-v","error","-i",str(path),"-ss",str(seconds),"-frames:v","1","-vf","scale=1280:-2","-y",str(target)],120)
     if not target.is_file():
         raise ValueError("frame not present at requested time")
     return target
@@ -80,7 +81,11 @@ def render(source,intro,title,plan,work,encoder="libx264",size=(1920,1080)):
     if audio_stream.get("channels",0) not in (1,2):
         raise ValueError("multichannel audio requires manual channel approval")
     fps=plan.fps
-    counts=[frame_count(6,fps),frame_count(plan.title_seconds,fps),frame_count(plan.lecture.end-plan.lecture.start,fps)]
+    source_fps=v["r_frame_rate"]
+    source_start=frame_count(plan.lecture.start,source_fps)
+    source_end=frame_count(plan.lecture.end,source_fps)
+    lecture_seconds=float(Fraction(source_end-source_start,1)/Fraction(source_fps))
+    counts=[frame_count(6,fps),frame_count(plan.title_seconds,fps),frame_count(lecture_seconds,fps)]
     width,height=size
     vf=f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p"
     parts=[]
@@ -89,13 +94,21 @@ def render(source,intro,title,plan,work,encoder="libx264",size=(1920,1080)):
         args=["ffmpeg","-v","error","-nostdin","-n"]
         if i==1:
             args += ["-loop","1"]
+        if i==2:
+            args += ["-copyts"]
         args += ["-i",str(path)]
         has_audio=i!=1 and any(s["codec_type"]=="audio" for s in (introinfo if i==0 else info)["streams"])
         if not has_audio:
             args += ["-f","lavfi","-i","anullsrc=r=48000:cl=stereo"]
+        segment_vf=vf
+        segment_af="asetpts=PTS-STARTPTS,apad"
         if i==2:
-            args += ["-ss",str(plan.lecture.start)]
-        args += ["-map","0:v:0","-map","0:a:0" if has_audio else "1:a:0","-t",str(seconds),"-vf",vf,"-af","asetpts=PTS-STARTPTS,apad","-c:v",encoder]
+            segment_vf=f"trim=start_frame={source_start}:end_frame={source_end},setpts=PTS-STARTPTS,"+vf
+            origin=float(v.get("start_time",0))
+            audio_start=origin+float(Fraction(source_start,1)/Fraction(source_fps))
+            audio_end=origin+float(Fraction(source_end,1)/Fraction(source_fps))
+            segment_af=f"atrim=start={audio_start}:end={audio_end},asetpts=PTS-STARTPTS,apad"
+        args += ["-map","0:v:0","-map","0:a:0" if has_audio else "1:a:0","-t",str(seconds),"-vf",segment_vf,"-af",segment_af,"-c:v",encoder]
         if encoder=="libx264":
             args += ["-preset","fast","-crf","20"]
         args += ["-c:a","aac","-ar","48000","-ac",str(audio_stream["channels"]),"-movflags","+faststart",str(work/f"part-{i}.mp4")]
@@ -105,7 +118,7 @@ def render(source,intro,title,plan,work,encoder="libx264",size=(1920,1080)):
     listing.write_text("".join(f"file 'part-{i}.mp4'\n" for i in range(3)))
     output=work/"render.mp4"
     run(["ffmpeg","-v","error","-n","-f","concat","-safe","1","-i",str(listing),"-c","copy","-movflags","+faststart",str(output)])
-    return output,{"segment_frames":counts,"expected_frames":sum(counts),"fps":fps,"size":list(size),"title_actual_seconds":float(Fraction(counts[1],1)/Fraction(fps)),"source_sha256":digest(source)}
+    return output,{"segment_frames":counts,"expected_frames":sum(counts),"fps":fps,"size":list(size),"source_frame_range":[source_start,source_end],"source_fps":source_fps,"title_actual_seconds":float(Fraction(counts[1],1)/Fraction(fps)),"source_sha256":digest(source)}
 
 
 def verify_output(path,expected):

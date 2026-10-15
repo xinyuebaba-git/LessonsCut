@@ -1,6 +1,7 @@
 import json
 import secrets
 from pathlib import Path
+from typing import Literal
 from fastapi import FastAPI,Depends,HTTPException,UploadFile,File,Header
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,6 +21,8 @@ class ImportBody(BaseModel):
 
 class BatchBody(BaseModel):
     asset_ids: list[str] = Field(min_length=1,max_length=100)
+    intro_asset_id: str | None = None
+    approval_policy: Literal["exceptions_only", "always"] = "exceptions_only"
 
 
 class RevisionBody(BaseModel):
@@ -30,7 +33,7 @@ class RevisionBody(BaseModel):
 def create_app(settings: Settings | None=None):
     settings=settings or get_settings();settings.prepare()
     store=Store(settings.database_url)
-    app=FastAPI(title="LessonsCut",version="0.1.0")
+    app=FastAPI(title="LessonsCut",version="0.2.0")
     app.state.store=store;app.state.settings=settings
 
     def auth(authorization: str | None=Header(default=None)):
@@ -54,11 +57,11 @@ def create_app(settings: Settings | None=None):
             return {"id":a.id,"name":a.name,"sha256":a.sha256,"kind":a.kind}
 
     @app.get("/health")
-    def health():return {"status":"ok","version":"0.1.0"}
+    def health():return {"status":"ok","version":"0.2.0"}
 
     @app.get("/api/v1/config",dependencies=[Depends(auth)])
     def config():
-        return {"qwen_model":settings.qwen_model,"minimax_supervisor_model":settings.minimax_supervisor_model,"image_model":settings.qwen_image_model,"image_provider":"aliyun","minimax_key_configured":bool(settings.minimax_api_key.get_secret_value()),"image_key_configured":bool(settings.dashscope_api_key.get_secret_value()),"max_calls_per_job":settings.max_calls_per_job,"gpu":"3090 development / existing external service","automatic_plan_approval":False}
+        return {"qwen_model":settings.qwen_model,"minimax_supervisor_model":settings.minimax_supervisor_model,"image_model":settings.qwen_image_model,"image_provider":"aliyun","minimax_key_configured":bool(settings.minimax_api_key.get_secret_value()),"image_key_configured":bool(settings.dashscope_api_key.get_secret_value()),"max_calls_per_job":settings.max_calls_per_job,"gpu":"3090 development / existing external service","automatic_plan_approval":settings.automatic_plan_approval,"asr_backend":settings.asr_backend,"asr_device":"cpu/int8","default_intro_asset_id":settings.default_intro_asset_id}
 
     @app.post("/api/v1/assets/imports",dependencies=[Depends(auth)])
     def import_asset(body: ImportBody):
@@ -99,9 +102,13 @@ def create_app(settings: Settings | None=None):
                 for asset_id in set(body.asset_ids):
                     a=s.get(Asset,asset_id)
                     if not a or a.kind!="video":raise HTTPException(422,"missing video asset")
+                intro_id=body.intro_asset_id or settings.default_intro_asset_id
+                if intro_id:
+                    intro=s.get(Asset,intro_id)
+                    if not intro or intro.kind!="video":raise HTTPException(422,"approved intro asset missing")
                 bid=uid();jobs=[]
                 for aid in dict.fromkeys(body.asset_ids):
-                    j=Job(id=uid(),batch_id=bid,asset_id=aid);s.add(j);jobs.append(j.id)
+                    j=Job(id=uid(),batch_id=bid,asset_id=aid,result=encode({"intro_asset_id":intro_id,"approval_policy":body.approval_policy}));s.add(j);jobs.append(j.id)
                 response={"batch_id":bid,"job_ids":jobs}
                 s.add(RequestKey(key=idempotency_key,fingerprint=fingerprint,response=encode(response)))
                 return response
@@ -134,7 +141,11 @@ def create_app(settings: Settings | None=None):
             if not intro or intro.kind!="video" or (body.plan.title_asset_id and (not title or title.kind!="image")):
                 raise HTTPException(422,"invalid intro/title asset")
             new=j.revision+1
-            updated=s.execute(update(Job).where(Job.id==jid,Job.revision==body.base_revision,Job.token.is_(None)).values(revision=new,state="QUEUED",stage="render",reason="" )).rowcount
+            previous=json.loads(j.result)
+            # Keep source evidence, never present a previous plan's acceptance or output as current.
+            retained={k:previous[k] for k in ('automation_version','intro_asset_id','approval_policy','candidate','evidence','observations','coarse_observations','transcript','style_reference_paths') if k in previous}
+            retained['source_analysis_revision']=j.revision
+            updated=s.execute(update(Job).where(Job.id==jid,Job.revision==body.base_revision,Job.token.is_(None)).values(revision=new,state="QUEUED",stage="render",reason="",result=encode(retained))).rowcount
             if updated!=1:raise HTTPException(409,"revision changed")
             s.add(Revision(job_id=jid,number=new,plan=encode(body.plan.model_dump())))
             s.add(Audit(job_id=jid,revision=new,event="Explicit plan confirmation: "+body.plan.reason))
@@ -152,6 +163,22 @@ def create_app(settings: Settings | None=None):
     @app.get("/api/v1/jobs/{jid}/usage",dependencies=[Depends(auth)])
     def usage(jid: str):
         with store.session() as s:return [{"id":c.id,"role":c.role,"model":c.model,"status":c.status,**json.loads(c.details)} for c in s.scalars(select(Call).where(Call.job_id==jid))]
+
+    @app.get("/api/v1/jobs/{jid}/report",dependencies=[Depends(auth)])
+    def report(jid: str):
+        with store.session() as s:
+            j=s.get(Job,jid)
+            if not j:raise HTTPException(404,"job not found")
+            return {"job_id":j.id,"revision":j.revision,"state":j.state,"reason":j.reason,"evidence_report":json.loads(j.result)}
+
+    @app.get("/api/v1/jobs/{jid}/transcript",dependencies=[Depends(auth)])
+    def transcript(jid: str):
+        with store.session() as s:
+            j=s.get(Job,jid)
+            if not j:raise HTTPException(404,"job not found")
+            transcript=json.loads(j.result).get("transcript")
+            if not transcript:raise HTTPException(404,"transcript not ready")
+            return transcript
 
     @app.get("/api/v1/jobs/{jid}/delivery",dependencies=[Depends(auth)])
     def delivery(jid: str):

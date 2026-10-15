@@ -74,3 +74,35 @@ def test_image_result_rejects_private_or_unknown_host(tmp_path):
     p,db=provider(tmp_path,lambda req:httpx.Response(200,json={'output':{'choices':[{'message':{'content':[{'image':'http://127.0.0.1/secret'}]}}]}}))
     p.settings.dashscope_api_key=__import__('pydantic').SecretStr('image-only-key')
     with pytest.raises(ProviderError,match='unapproved'):p.generate_title('课程',None,'white',tmp_path/'x.png')
+
+
+def test_completed_request_cache_prevents_duplicate_billing(tmp_path):
+    requests=[]
+    def handler(req):
+        requests.append(req)
+        return httpx.Response(200,json={'choices':[{'message':{'content':'{"title":"课程"}'}}],'usage':{'prompt_tokens':10,'completion_tokens':5,'total_tokens':15}})
+    p,db=provider(tmp_path,handler)
+    assert p.chat('supervisor','same evidence')==p.chat('supervisor','same evidence')
+    assert len(requests)==1
+    with db.session() as s:assert len(list(s.scalars(select(Call))))==1
+
+
+def test_format_repair_does_not_retry_unknown_transport_execution():
+    from lessonscut.pipeline import Pipeline
+    from lessonscut.providers import ProviderOutputError
+    class InvalidThenValid:
+        calls=0
+        def chat(self,*args):
+            self.calls+=1
+            if self.calls==1:raise ProviderOutputError('invalid JSON')
+            return {'decision':'uncertain','checks':[{'code':'title_text','decision':'uncertain','reason':'unreadable'}],'issues':['unreadable'],'limits':'fixture'}
+    p=InvalidThenValid();result=Pipeline(None,None).reviewed(p,'review',[])
+    assert p.calls==2 and result.decision=='uncertain'
+    class Unknown:
+        calls=0
+        def chat(self,*args):
+            self.calls+=1
+            raise ProviderError('execution may be unknown')
+    p=Unknown()
+    with pytest.raises(ProviderError):Pipeline(None,None).reviewed(p,'review',[])
+    assert p.calls==1
