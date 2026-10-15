@@ -1,0 +1,119 @@
+{
+  "schema_version": "1.0",
+  "record_type": "historical_evidence_not_new_test_execution",
+  "evidence_date": "2026-10-13",
+  "compiled_date": "2026-10-15",
+  "source_frame_range_basis": "CFR30 frame mapping from recorded ChatCut microsecond ranges; not original PTS inventory",
+  "cases": [
+    {
+      "case_id": "H01",
+      "source_filename": "1.mp4",
+      "source_sha256": "16ad6d4035d3c753b6c432458ad49cfd63218f9d93f29e48fc79a5cc50c827b7",
+      "title": "名誉侵权",
+      "presenter": "符敏妍",
+      "title_origin": "Qwen从本节授课口头说明确定",
+      "fps": {
+        "num": 30,
+        "den": 1
+      },
+      "source_lecture_frame_range": [
+        803,
+        11322
+      ],
+      "output_intro_frame_range": [
+        0,
+        180
+      ],
+      "output_title_frame_range": [
+        180,
+        225
+      ],
+      "output_lecture_frame_range": [
+        225,
+        10744
+      ],
+      "output_frames": 10744,
+      "historical_output_sha256": "b2c5a4fe4b50e04de7d87fa6091bc4eebb5f8ed99c4372ff80899b3b2436514f",
+      "historical_output_bytes": 357798178,
+      "historical_container_seconds": 358.208,
+      "historical_audio_sample": {
+        "lag_seconds": 0.044,
+        "normalized_correlation": 0.9986145837654561
+      },
+      "historical_audio_samples_count": 1,
+      "historical_full_decode_passed": true,
+      "historical_model_sample_review_passed": true,
+      "historical_new_caption_cards": 0,
+      "v1_generates_new_captions": false,
+      "evidence_paths": [
+        "export-1-3-20261013/timeline-1.json",
+        "export-1-3-20261013/technical-1.json",
+        "export-1-3-20261013/final-delivery.json",
+        "title-revision-1-3-20261013/final-delivery.json"
+      ],
+      "expected_new_render_hash_equals_historical": false
+    },
+    {
+      "case_id": "H03",
+      "source_filename": "3.mp4",
+      "source_sha256": "a097f9e91b9224efcf4337fc439327e455bc0cadb3f24d4fc88247b72bb7ab07",
+      "title": "农村电商园区经验分享",
+      "presenter": "姚雅晴",
+      "title_origin": "Qwen从授课页面提取本节课标题",
+      "fps": {
+        "num": 30,
+        "den": 1
+      },
+      "source_lecture_frame_range": [
+        653,
+        16227
+      ],
+      "output_intro_frame_range": [
+        0,
+        180
+      ],
+      "output_title_frame_range": [
+        180,
+        225
+      ],
+      "output_lecture_frame_range": [
+        225,
+        15799
+      ],
+      "output_frames": 15799,
+      "historical_output_sha256": "1ebe5cd92dbf7f22385ea219e2f95a4cc7c2fd8b2ee7ae932cf83165036a0e1f",
+      "historical_output_bytes": 168826835,
+      "historical_container_seconds": 526.698667,
+      "historical_audio_sample": {
+        "lag_seconds": 0.043875,
+        "normalized_correlation": 0.9774369141184085
+      },
+      "historical_audio_samples_count": 1,
+      "historical_full_decode_passed": true,
+      "historical_model_sample_review_passed": true,
+      "historical_new_caption_cards": 169,
+      "v1_generates_new_captions": false,
+      "evidence_paths": [
+        "export-1-3-20261013/timeline-3.json",
+        "export-1-3-20261013/technical-3.json",
+        "export-1-3-20261013/final-delivery.json",
+        "title-revision-1-3-20261013/final-delivery.json"
+      ],
+      "expected_new_render_hash_equals_historical": false
+    }
+  ],
+  "historical_export_usage": {
+    "prompt_tokens": 15876,
+    "completion_tokens": 434,
+    "total_tokens": 16310,
+    "cached_prompt_tokens": 256
+  },
+  "historical_export_call_count": 4,
+  "historical_export_missing_usage": 0,
+  "limitations": [
+    "No new semantic video recognition performed while compiling this baseline.",
+    "Historical audio checks sampled one location per video, not the v1 three-position acceptance requirement.",
+    "Historical 3 video includes added captions; v1 basic output will not regenerate them.",
+    "Historical MP4 hashes identify evidence files, not expected hashes from future encoders."
+  ]
+}

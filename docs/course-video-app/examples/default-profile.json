@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "kind": "design_template_not_runtime_config",
+  "profile_id": "guangzhou-open-university-basic",
+  "revision": 1,
+  "rules": {
+    "intro": {"reference_asset_id": null, "duration_seconds": "6", "on_match": "retain_verified_range", "on_mismatch": "replace_with_reference"},
+    "title": {"duration_seconds": "1.5", "allowed_text": ["lesson_title", "verified_presenter"], "style": "match_source", "inferred_title_requires_human": true, "unknown_presenter": "omit_when_no_evidence_else_review"},
+    "lecture": {"start": "first_presenter_teaching", "end": "teaching_complete_before_outro", "preserve_continuity": true, "preserve_source_audio": true},
+    "new_subtitles": false,
+    "logo_removal": false
+  },
+  "output": {
+    "width": 1920, "height": 1080, "video_codec": "h264", "pixel_format": "yuv420p",
+    "audio_codec": "aac", "sample_rate": 48000, "channel_policy": "preserve_mono_or_stereo_else_review",
+    "fps_policy": "verified_source_nominal_else_review", "fps_mode": "cfr", "rounding": "half_up",
+    "fit": "contain", "color_policy": "sdr_else_review", "overwrite": false, "root_id": null
+  },
+  "models": {"recognizer_profile_id": null, "supervisor_profile_id": null, "title_generator_profile_id": null, "optional_local_transcriber_profile_id": null},
+  "cloud_egress": {"reports": true, "necessary_frames": true, "relevant_text": true, "raw_audio": false, "video_clips": false, "full_video": false},
+  "scheduling": {"cpu_media_workers": 2, "gpu_heavy_slots": 1, "render_slots": 1, "provider_default_concurrency": 1, "allow_inference_render_overlap": false, "max_auto_retries": 2, "max_quality_rework_rounds": 2, "gpu_residency_max_jobs": 4, "gpu_residency_max_seconds": 600, "lease_seconds": 60, "heartbeat_seconds": 10},
+  "review": {"approval_policy": "exceptions_only", "boundary_dense_sampling": true, "body_sample_every_seconds": 30, "full_decode_required": true, "audio_sample_positions": ["start", "middle", "end"], "audio_correlation_min": 0.9, "audio_residual_lag_max_ms": 80, "audio_lag_drift_max_ms": 40, "audio_tail_padding_max_ms": 120},
+  "budget": {"max_calls_per_job": null, "max_provider_cost_per_batch": null, "currency": null, "max_gpu_seconds_per_job": null, "unknown_price_policy": "require_explicit_call_and_time_limits"},
+  "retention": {"successful_temporary_days": 7, "failed_diagnostics_days": 30, "auto_delete_sources": false, "auto_delete_deliveries": false, "auto_delete_project_audit": false},
+  "required_site_bindings": ["approved_intro_asset", "authorized_input_and_output_roots", "verified_three_model_profiles", "credential_references", "budget_limits", "managed_gpu_services", "render_encoder_profile"]
+}

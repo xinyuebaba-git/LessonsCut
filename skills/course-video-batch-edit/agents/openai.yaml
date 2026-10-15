@@ -1,0 +1,4 @@
+interface:
+  display_name: "课程视频批量剪辑"
+  short_description: "编排课程视频识别、标题生成、连续授课剪辑及成片复核，保留证据与用量"
+  default_prompt: "使用 $course-video-batch-edit 按指定模型与课程模板处理视频，输出可重建剪辑计划、成片和复核报告。"
