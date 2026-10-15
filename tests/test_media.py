@@ -2,7 +2,7 @@ from pathlib import Path
 import json,subprocess
 import pytest
 from PIL import Image
-from lessonscut.media import render,verify_output,verify_audio,publish,digest,authorized_path,run
+from lessonscut.media import render,verify_output,verify_audio,verify_hold,publish,digest,authorized_path,run
 from lessonscut.domain import ConfirmedPlan
 
 
@@ -21,15 +21,20 @@ def test_symlink_escape(tmp_path):
     with pytest.raises(ValueError):authorized_path(allowed,'link')
 
 
-def test_real_ffmpeg_render_decode_and_audio(tmp_path):
+@pytest.mark.parametrize('held',[False,True])
+def test_real_ffmpeg_render_decode_and_audio(tmp_path,held):
     source=tmp_path/'source.mp4'
     run(['ffmpeg','-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=30','-f','lavfi','-i','anoisesrc=color=pink:seed=42:sample_rate=48000','-t','8','-c:v','libx264','-preset','ultrafast','-c:a','aac',str(source)])
     title=tmp_path/'title.png';Image.new('RGB',(320,180),'white').save(title)
     before=digest(source)
-    plan=ConfirmedPlan(title='测试',lecture={'start':2,'end':5},intro_asset_id='intro',reason='synthetic test')
+    ending={'audio_end':5.61,'evidence_ids':['s1'],'reason':'synthetic closing speech'} if held else None
+    plan=ConfirmedPlan(title='测试',lecture={'start':2,'end':5},ending=ending,intro_asset_id='intro',reason='synthetic test')
     output,expected=render(source,source,title,plan,tmp_path/'render',size=(320,180))
     report=verify_output(output,expected)
-    assert report['frames']==315 and expected['segment_frames']==[180,45,90]
+    assert report['frames']==(334 if held else 315) and expected['segment_frames']==[180,45,109 if held else 90]
+    if held:
+        check=verify_hold(output,expected)
+        assert check['hold_frames']==19 and expected['source_audio_end']==5.61
     checks=verify_audio(source,output,plan)
     assert len(checks)==3
     assert digest(source)==before

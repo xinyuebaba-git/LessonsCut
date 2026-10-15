@@ -28,6 +28,13 @@ class Candidate(StrictModel):
     uncertainties: list[str]
 
 
+class EndingHold(StrictModel):
+    mode: Literal['hold_last_teaching_frame'] = 'hold_last_teaching_frame'
+    audio_end: float = Field(gt=0)
+    evidence_ids: list[str] = Field(min_length=1)
+    reason: str = Field(min_length=1,max_length=1000)
+
+
 class ConfirmedPlan(StrictModel):
     title: str = Field(min_length=1, max_length=120)
     presenter: str | None = Field(default=None, max_length=80)
@@ -35,6 +42,7 @@ class ConfirmedPlan(StrictModel):
     intro_asset_id: str
     title_asset_id: str | None = None
     title_seconds: float = Field(default=1.5, gt=0, le=10)
+    ending: EndingHold | None = None
     fps: str = Field(default="30/1", pattern=r"^[1-9][0-9]*/[1-9][0-9]*$")
     reason: str = Field(min_length=1, max_length=1000)
 
@@ -42,6 +50,10 @@ class ConfirmedPlan(StrictModel):
     def fps_range(self):
         if not 1 <= Fraction(self.fps) <= 120:
             raise ValueError("fps outside supported range")
+        if self.ending and self.ending.audio_end<=self.lecture.end:
+            raise ValueError('held ending must extend past visual lecture end')
+        if self.ending and self.ending.audio_end-self.lecture.end>30:
+            raise ValueError('held closing speech exceeds 30-second hard limit')
         return self
 
 

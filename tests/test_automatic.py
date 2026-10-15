@@ -53,7 +53,9 @@ def test_exact_pts_extraction_matches_full_decode(tmp_path):
 
 
 @pytest.mark.parametrize('cloud_conflict',[False,True])
-def test_automatic_plan_from_asr_and_adjacent_frames_or_conflict(tmp_path,cloud_conflict):
+@pytest.mark.parametrize('held',[False,True])
+@pytest.mark.parametrize('asr_name_typo',[False,True])
+def test_automatic_plan_from_asr_and_adjacent_frames_or_conflict(tmp_path,cloud_conflict,held,asr_name_typo):
     from lessonscut.automatic import AutomaticAnalysis
     from lessonscut.config import Settings
     from lessonscut.store import Store,Asset,Job,Revision,encode
@@ -70,7 +72,11 @@ def test_automatic_plan_from_asr_and_adjacent_frames_or_conflict(tmp_path,cloud_
     class FakeASR:
         def __init__(self,*a):pass
         def transcribe(self,*a):
-            return Transcript(schema_version='1.0',engine='fixture',device='cpu',compute_type='int8',model='fixture',audio_sha256='x',language='zh',duration=12,duration_ms=1,segments=[{'id':'asr-0','start':6.1,'end':8.9,'text':'今天讲测试课程','avg_logprob':-0.1,'no_speech_prob':0.01,'words':[]}])
+            segments=[{'id':'asr-0','start':6.1,'end':8.5,'text':'今天讲测试课程'+('，主讲人张山' if asr_name_typo else ''),'avg_logprob':-0.1,'no_speech_prob':0.01,'words':[]}]
+            if held:
+                segments.extend([{'id':'close','start':8.8,'end':9.61,'text':'再见','avg_logprob':-0.1,'no_speech_prob':0.01,'words':[{'start':8.8,'end':9.61,'word':'再见','probability':0.99}]},
+                                 {'id':'promo','start':9.61,'end':10.5,'text':'下一课预告','avg_logprob':-0.1,'no_speech_prob':0.01,'words':[{'start':9.61,'end':10.5,'word':'下一课预告','probability':0.99}]}])
+            return Transcript(schema_version='1.0',engine='fixture',device='cpu',compute_type='int8',model='fixture',audio_sha256='x',language='zh',duration=12,duration_ms=1,segments=segments)
     class Provider:
         def chat(self,role,prompt,images=()):
             if prompt.startswith('逐张识别'):
@@ -85,14 +91,20 @@ def test_automatic_plan_from_asr_and_adjacent_frames_or_conflict(tmp_path,cloud_
                 frames=json.loads(match.group(1));start='是否已经进入' in prompt
                 return {'frames':[{'frame':f,'belongs':f>=180 if start else f<270,'confidence':0.99,'reason':'fixture'} for f in frames]}
             if prompt.startswith('从实际OCR'):
-                return {'title':'测试课程','presenter':'张三','origin':'visible_text','title_evidence_ids':['frame-60'],'presenter_evidence_ids':['frame-180'],'presenter_status':'verified','style_evidence_ids':['frame-60'],'style_description':'白底绿色字体','conflicts':[]}
+                return {'title':'测试课程','presenter':'张三','origin':'visible_text','title_evidence_ids':['frame-60'],'presenter_evidence_ids':['frame-180']+(['asr-0'] if asr_name_typo else []),'presenter_status':'verified','style_evidence_ids':['frame-60'],'style_description':'白底绿色字体','conflicts':[]}
             if prompt.startswith('独立课名读取'):
                 return {'title':'其他课程' if cloud_conflict else '测试课程','issues':[]}
             if prompt.startswith('独立姓名读取'):
                 return {'presenter':'张三','issues':[]}
+            if prompt.startswith('收束语定格判断'):
+                return {'decision':'hold','closing_segment_ids':['close'],'excluded_segment_ids':['promo'],'reason':'synthetic closing only'}
+            if prompt.startswith('姓名证据补充核验'):
+                return {'decision':'visible_signatures_agree','presenter':'张三','evidence_ids':['frame-180','frame-240'],'reason':'two clear source signatures; retain raw ASR spelling separately'}
             if prompt.startswith('切点独立复核'):
                 codes=['start_boundary'] if 'start_boundary' in prompt else ['end_boundary']
-            else:codes=['intro_identity','title_evidence','presenter_evidence','continuous_teaching','speech_context']
+            else:
+                codes=['intro_identity','title_evidence','presenter_evidence','continuous_teaching','speech_context']
+                if held:codes+=['closing_speech']
             return {'decision':'pass','checks':[{'code':c,'decision':'pass','reason':'fixture'} for c in codes],'issues':[],'limits':'fixture samples only'}
     work=cfg.data_dir/'work/job/1';work.mkdir(parents=True)
     analysis=AutomaticAnalysis(cfg,store,jid,rev,token,source,Provider(),work,asr_factory=FakeASR)
@@ -102,6 +114,8 @@ def test_automatic_plan_from_asr_and_adjacent_frames_or_conflict(tmp_path,cloud_
     else:
         plan,result=analysis.run('source')
         assert result['source_frame_range']==[180,270] and plan.lecture.start==6 and plan.lecture.end==9
+        assert (plan.ending.audio_end if plan.ending else None)==(9.61 if held else None)
+        assert bool(result.get('presenter_resolution'))==asr_name_typo
         with store.session() as s:assert s.get(Revision,('job',1)) is not None
 
 
@@ -112,3 +126,29 @@ def test_cross_boundary_speech_is_recorded_without_auto_truncation():
     assert len(conflicts)==1 and conflicts[0]['boundary']=='end'
     assert conflicts[0]['segment_id']=='s1' and conflicts[0]['word']['end']==10.4
     assert speech_cut_conflicts(segments,{'start':2.0,'end':10.5})==[]
+
+
+@pytest.mark.parametrize('kind',['valid','too_long','skipped','overlap','uncertain'])
+def test_ending_only_keeps_contiguous_verified_closing_speech(kind):
+    from lessonscut.automatic import ClosingChoice,validated_ending
+    segments=[{'id':'close','start':9.8,'end':10.61,'avg_logprob':-0.1,'no_speech_prob':0.01,'words':[{'end':10.61}]},
+              {'id':'promo','start':10.61,'end':14,'avg_logprob':-0.1,'no_speech_prob':0.01,'words':[{'end':14}]}]
+    d={'decision':'hold','closing_segment_ids':['close'],'excluded_segment_ids':['promo'],'reason':'fixture model evidence'}
+    limit=10
+    if kind=='too_long':limit=0.5
+    if kind=='skipped':d.update(closing_segment_ids=['promo'],excluded_segment_ids=['close'])
+    if kind=='overlap':segments[1]['start']=10.5
+    if kind=='uncertain':d['decision']='review'
+    if kind=='valid':
+        assert validated_ending(ClosingChoice(**d),segments,10,20,limit).audio_end==10.61
+    else:
+        with pytest.raises(NeedsReview):validated_ending(ClosingChoice(**d),segments,10,20,limit)
+
+
+def test_clear_outro_speech_after_cut_does_not_need_a_freeze():
+    from lessonscut.automatic import ClosingChoice,validated_ending
+    c=ClosingChoice(decision='none',closing_segment_ids=[],excluded_segment_ids=['promo'],reason='independent models identify outro')
+    segments=[{'id':'promo','start':10.2,'end':12}]
+    assert validated_ending(c,segments,10,20,10) is None
+    segments[0]['start']=9.9
+    with pytest.raises(NeedsReview):validated_ending(c,segments,10,20,10)

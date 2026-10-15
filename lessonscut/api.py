@@ -30,6 +30,11 @@ class RevisionBody(BaseModel):
     plan: ConfirmedPlan
 
 
+class ReanalyzeBody(BaseModel):
+    base_revision: int
+    reason: str = Field(min_length=1,max_length=1000)
+
+
 def create_app(settings: Settings | None=None):
     settings=settings or get_settings();settings.prepare()
     store=Store(settings.database_url)
@@ -61,7 +66,7 @@ def create_app(settings: Settings | None=None):
 
     @app.get("/api/v1/config",dependencies=[Depends(auth)])
     def config():
-        return {"qwen_model":settings.qwen_model,"minimax_supervisor_model":settings.minimax_supervisor_model,"image_model":settings.qwen_image_model,"image_provider":"aliyun","minimax_key_configured":bool(settings.minimax_api_key.get_secret_value()),"image_key_configured":bool(settings.dashscope_api_key.get_secret_value()),"max_calls_per_job":settings.max_calls_per_job,"gpu":"3090 development / existing external service","automatic_plan_approval":settings.automatic_plan_approval,"asr_backend":settings.asr_backend,"asr_device":"cpu/int8","default_intro_asset_id":settings.default_intro_asset_id}
+        return {"qwen_model":settings.qwen_model,"minimax_supervisor_model":settings.minimax_supervisor_model,"image_model":settings.qwen_image_model,"image_provider":"aliyun","minimax_key_configured":bool(settings.minimax_api_key.get_secret_value()),"image_key_configured":bool(settings.dashscope_api_key.get_secret_value()),"max_calls_per_job":settings.max_calls_per_job,"gpu":"3090 development / existing external service","automatic_plan_approval":settings.automatic_plan_approval,"asr_backend":settings.asr_backend,"asr_device":"cpu/int8","default_intro_asset_id":settings.default_intro_asset_id,"ending_policy":settings.ending_policy,"max_ending_hold_seconds":settings.max_ending_hold_seconds}
 
     @app.post("/api/v1/assets/imports",dependencies=[Depends(auth)])
     def import_asset(body: ImportBody):
@@ -131,6 +136,8 @@ def create_app(settings: Settings | None=None):
 
     @app.post("/api/v1/jobs/{jid}/revisions",status_code=202,dependencies=[Depends(auth)])
     def revise(jid: str,body: RevisionBody):
+        if body.plan.ending and body.plan.ending.audio_end-body.plan.lecture.end>settings.max_ending_hold_seconds:
+            raise HTTPException(422,'held closing speech exceeds configured limit')
         with store.session() as s:
             j=s.scalar(select(Job).where(Job.id==jid).with_for_update())
             if not j:raise HTTPException(404,"job not found")
@@ -143,7 +150,7 @@ def create_app(settings: Settings | None=None):
             new=j.revision+1
             previous=json.loads(j.result)
             # Keep source evidence, never present a previous plan's acceptance or output as current.
-            retained={k:previous[k] for k in ('automation_version','intro_asset_id','approval_policy','candidate','evidence','observations','coarse_observations','transcript','style_reference_paths') if k in previous}
+            retained={k:previous[k] for k in ('automation_version','intro_asset_id','approval_policy','candidate','evidence','observations','coarse_observations','transcript','style_reference_paths','ending_recognition','ending_proposal') if k in previous}
             retained['source_analysis_revision']=j.revision
             updated=s.execute(update(Job).where(Job.id==jid,Job.revision==body.base_revision,Job.token.is_(None)).values(revision=new,state="QUEUED",stage="render",reason="",result=encode(retained))).rowcount
             if updated!=1:raise HTTPException(409,"revision changed")
@@ -159,6 +166,21 @@ def create_app(settings: Settings | None=None):
             if j.token or j.state=="DELIVERED":raise HTTPException(409,"v0.1 cannot cancel active or delivered job")
             j.state="CANCELLED";s.add(Audit(job_id=jid,revision=j.revision,event="Cancelled by administrator"))
             return {"state":"CANCELLED"}
+
+    @app.post('/api/v1/jobs/{jid}/reanalyze',status_code=202,dependencies=[Depends(auth)])
+    def reanalyze(jid: str,body: ReanalyzeBody):
+        with store.session() as s:
+            j=s.scalar(select(Job).where(Job.id==jid).with_for_update())
+            if not j:raise HTTPException(404,'job not found')
+            if j.revision!=body.base_revision or j.token or j.state not in ('NEEDS_REVIEW','DELIVERED','CANCELLED'):
+                raise HTTPException(409,'revision conflict or job still active')
+            previous=json.loads(j.result)
+            retained={k:previous[k] for k in ('intro_asset_id','approval_policy') if k in previous}
+            new=j.revision+1
+            changed=s.execute(update(Job).where(Job.id==jid,Job.revision==body.base_revision,Job.token.is_(None)).values(revision=new,state='QUEUED',stage='analyze',reason='',result=encode(retained))).rowcount
+            if changed!=1:raise HTTPException(409,'revision changed')
+            s.add(Audit(job_id=jid,revision=new,event='Reanalysis requested with current policy: '+body.reason+'; previous revision result: '+encode(previous)))
+            return {'job_id':jid,'revision':new,'state':'QUEUED'}
 
     @app.get("/api/v1/jobs/{jid}/usage",dependencies=[Depends(auth)])
     def usage(jid: str):

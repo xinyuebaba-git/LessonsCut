@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     asr_model_path: str = "/mnt/sdc/models/lessonscut-asr/large-v3-turbo"
     asr_threads: int = Field(default=16, ge=1, le=64)
     asr_timeout_seconds: int = Field(default=3600, ge=30)
+    ending_policy: str = Field(default='freeze_for_closing_speech',pattern='^(review|freeze_for_closing_speech)$',validation_alias='LESSONSCUT_ENDING_POLICY')
+    max_ending_hold_seconds: float = Field(default=10,gt=0,le=30,validation_alias='LESSONSCUT_MAX_ENDING_HOLD_SECONDS')
     encoder: str = Field(default="libx264", pattern="^(libx264|h264_nvenc)$", validation_alias="LESSONSCUT_ENCODER")
 
     def prepare(self):

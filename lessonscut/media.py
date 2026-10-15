@@ -86,6 +86,13 @@ def render(source,intro,title,plan,work,encoder="libx264",size=(1920,1080)):
     source_end=frame_count(plan.lecture.end,source_fps)
     lecture_seconds=float(Fraction(source_end-source_start,1)/Fraction(source_fps))
     counts=[frame_count(6,fps),frame_count(plan.title_seconds,fps),frame_count(lecture_seconds,fps)]
+    hold_frames=0
+    if plan.ending:
+        if plan.ending.audio_end>duration+0.001:raise ValueError('closing audio exceeds source')
+        hold=Fraction(str(plan.ending.audio_end))-Fraction(str(plan.lecture.end))
+        needed=hold*Fraction(fps)
+        hold_frames=(needed.numerator+needed.denominator-1)//needed.denominator
+        counts[2]+=hold_frames
     width,height=size
     vf=f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p"
     parts=[]
@@ -104,9 +111,10 @@ def render(source,intro,title,plan,work,encoder="libx264",size=(1920,1080)):
         segment_af="asetpts=PTS-STARTPTS,apad"
         if i==2:
             segment_vf=f"trim=start_frame={source_start}:end_frame={source_end},setpts=PTS-STARTPTS,"+vf
+            if hold_frames:segment_vf+=f",tpad=stop_mode=clone:stop_duration={float(Fraction(hold_frames,1)/Fraction(fps))}"
             origin=float(v.get("start_time",0))
             audio_start=origin+float(Fraction(source_start,1)/Fraction(source_fps))
-            audio_end=origin+float(Fraction(source_end,1)/Fraction(source_fps))
+            audio_end=origin+(plan.ending.audio_end if plan.ending else float(Fraction(source_end,1)/Fraction(source_fps)))
             segment_af=f"atrim=start={audio_start}:end={audio_end},asetpts=PTS-STARTPTS,apad"
         args += ["-map","0:v:0","-map","0:a:0" if has_audio else "1:a:0","-t",str(seconds),"-vf",segment_vf,"-af",segment_af,"-c:v",encoder]
         if encoder=="libx264":
@@ -118,7 +126,7 @@ def render(source,intro,title,plan,work,encoder="libx264",size=(1920,1080)):
     listing.write_text("".join(f"file 'part-{i}.mp4'\n" for i in range(3)))
     output=work/"render.mp4"
     run(["ffmpeg","-v","error","-n","-f","concat","-safe","1","-i",str(listing),"-c","copy","-movflags","+faststart",str(output)])
-    return output,{"segment_frames":counts,"expected_frames":sum(counts),"fps":fps,"size":list(size),"source_frame_range":[source_start,source_end],"source_fps":source_fps,"title_actual_seconds":float(Fraction(counts[1],1)/Fraction(fps)),"source_sha256":digest(source)}
+    return output,{"segment_frames":counts,"expected_frames":sum(counts),"fps":fps,"size":list(size),"source_frame_range":[source_start,source_end],"source_fps":source_fps,"title_actual_seconds":float(Fraction(counts[1],1)/Fraction(fps)),"source_sha256":digest(source),"ending_hold_frames":hold_frames,"ending_hold_seconds":float(Fraction(hold_frames,1)/Fraction(fps)),"source_audio_end":plan.ending.audio_end if plan.ending else plan.lecture.end}
 
 
 def verify_output(path,expected):
@@ -141,7 +149,7 @@ def verify_output(path,expected):
 
 
 def verify_audio(source,output,plan):
-    length=plan.lecture.end-plan.lecture.start
+    length=(plan.ending.audio_end if plan.ending else plan.lecture.end)-plan.lecture.start
     win=min(8,length/4)
     if win<0.2:
         raise ValueError("audio too short to validate")
@@ -165,6 +173,26 @@ def verify_audio(source,output,plan):
     if any(r["correlation"]<0.90 or abs(r["lag_seconds"])>0.08 for r in rows) or max(r["lag_seconds"] for r in rows)-min(r["lag_seconds"] for r in rows)>0.04:
         raise ValueError("audio alignment failed")
     return rows
+
+
+def verify_hold(output,expected):
+    """Compare decoded last moving frame to sampled held frames, without semantic judgment."""
+    n=expected.get('ending_hold_frames',0)
+    if not n:return None
+    fps=Fraction(expected['fps'])
+    first=expected['expected_frames']-n
+    selected=sorted({first-1,first,first+n//2,expected['expected_frames']-1})
+    arrays=[]
+    for frame in selected:
+        raw=run(['ffmpeg','-v','error','-i',str(output),'-ss',str(float(Fraction(frame,1)/fps)),'-frames:v','1','-vf','scale=480:270,format=gray','-f','rawvideo','pipe:1'])
+        if len(raw)!=480*270:raise ValueError('held frame could not be decoded')
+        arrays.append(np.frombuffer(raw,np.uint8).astype(float))
+    psnr=[]
+    for sample in arrays[1:]:
+        mse=float(np.mean((sample-arrays[0])**2))
+        psnr.append(100.0 if mse==0 else float(10*np.log10(255**2/mse)))
+    if min(psnr)<40:raise ValueError('held ending differs from last teaching frame')
+    return {'sampled_output_frames':selected,'psnr_db_vs_last_teaching':psnr,'hold_frames':n,'hold_seconds':expected['ending_hold_seconds']}
 
 
 def publish(path,root,name,expected_hash):

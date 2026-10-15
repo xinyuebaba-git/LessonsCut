@@ -70,3 +70,14 @@ def test_claim_single_slot_and_stale_fence(client):
     with pytest.raises(RuntimeError):store.transition(jid,1,"wrong-token","DELIVERED",{})
     store.transition(*claim,"NEEDS_REVIEW",{},"test")
     assert c.get(f'/api/v1/jobs/{jid}').json()['state']=='NEEDS_REVIEW'
+
+
+def test_reanalysis_creates_new_revision_and_invalidates_previous_output(client):
+    c,app=client;jid=new_job(c)
+    with app.state.store.session() as s:
+        j=s.get(Job,jid);j.state='NEEDS_REVIEW';j.result=encode({'intro_asset_id':'intro','delivery_path':'old.mp4','plan_review':{'decision':'pass'}})
+    payload={'base_revision':1,'reason':'用户批准新收束规则'}
+    assert c.post(f'/api/v1/jobs/{jid}/reanalyze',json=payload).json()['revision']==2
+    assert c.post(f'/api/v1/jobs/{jid}/reanalyze',json=payload).status_code==409
+    result=c.get(f'/api/v1/jobs/{jid}').json()
+    assert result['stage']=='analyze' and result['result']=={'intro_asset_id':'intro'}

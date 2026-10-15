@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 from pydantic import Field, ValidationError
 from sqlalchemy import select
-from .domain import StrictModel, ConfirmedPlan, Candidate, Review, review_passed
+from .domain import StrictModel, ConfirmedPlan, Candidate, Review, EndingHold, review_passed
 from .frame_index import FrameIndex
 from .asr import LocalASR
 from .media import digest
@@ -70,9 +70,45 @@ class PresenterFact(StrictModel):
     issues: list[str]
 
 
+class PresenterResolution(StrictModel):
+    presenter: str | None
+    decision: Literal['visible_signatures_agree','review']
+    evidence_ids: list[str]
+    reason: str = Field(min_length=1,max_length=1000)
+
+
 class TitleStyle(StrictModel):
     style_evidence_ids: list[str] = Field(min_length=1,max_length=2)
     style_description: str = Field(min_length=1,max_length=1000)
+
+
+class ClosingChoice(StrictModel):
+    decision: Literal['hold','none','review']
+    closing_segment_ids: list[str]
+    excluded_segment_ids: list[str]
+    reason: str = Field(min_length=1,max_length=1000)
+
+
+def validated_ending(choice,segments,visual_end,source_end,max_hold):
+    ids=[s['id'] for s in segments]
+    kept=choice.closing_segment_ids
+    if choice.decision=='none':
+        if kept or choice.excluded_segment_ids!=ids or any(s['start']<visual_end for s in segments):
+            raise NeedsReview('outro-only classification crosses visual cut or has invalid coverage')
+        return None
+    if choice.decision!='hold' or not kept or kept!=ids[:len(kept)] or choice.excluded_segment_ids!=ids[len(kept):]:
+        raise NeedsReview('closing speech evidence is uncertain or non-contiguous')
+    chosen=segments[:len(kept)]
+    if any(s['avg_logprob']< -1 or s['no_speech_prob']>=0.6 or not s['words'] for s in chosen):
+        raise NeedsReview('closing speech ASR evidence unreliable')
+    if chosen[0]['start']>visual_end+1 or any(b['start']-a['end']>1 for a,b in zip(chosen,chosen[1:])):
+        raise NeedsReview('closing speech is not adjacent to lecture')
+    audio_end=max(max(s['end'],max(w['end'] for w in s['words'])) for s in chosen)
+    if not visual_end<audio_end<=min(source_end,visual_end+max_hold):
+        raise NeedsReview('closing speech exceeds authorized hold bounds')
+    if choice.excluded_segment_ids and segments[len(kept)]['start']<audio_end-0.001:
+        raise NeedsReview('closing and excluded speech overlap')
+    return EndingHold(audio_end=audio_end,evidence_ids=kept,reason=choice.reason)
 
 
 class PreludeCheck(StrictModel):
@@ -183,6 +219,30 @@ class AutomaticAnalysis:
                     revised=[changed.get(r.evidence_id,r) for r in ordered]
                     return revised,next(i for i,r in enumerate(revised) if r.evidence_id==row.evidence_id)
         raise NeedsReview("no verified real presenter after contextual checks")
+
+    def closing_ending(self,end):
+        cut=end['seconds']
+        candidates=[s.model_dump() for s in self.transcript.segments if s.end>cut and s.start>=cut-10]
+        if not candidates or candidates[0]['start']>cut+1:return None
+        if self.cfg.ending_policy=='review':raise NeedsReview('closing speech requires configured manual review')
+        context=[s.model_dump(exclude={'words'}) for s in self.transcript.segments if s.end>=cut-15]
+        batch=[self.evidence[i] for i in end['evidence_ids']]
+        prompt=('收束语定格判断：用户已批准，片尾画面开始但本课收束语未完时，定格最后授课帧，保留完整收束原声后结束。'
+                '逐条区分本课教学/收束（包括道别感谢）与下一课预告、制作宣传等片尾语音；后者删除。不能因为同一讲师继续说就把预告算本课收束。'
+                '只选择候选ID，不改写文字或猜时间。closing_segment_ids必须为从第一条开始的连续前缀，其余逐条列入excluded_segment_ids；混合语义无法分开、声音类别无法确认或需要跳段则review。'
+                '若候选全部是片尾/预告且没有本课收束语，decision用none，保留列表为空，排除列表覆盖全部候选；不需要定格。'
+                '这是独立读取，尚未给另一模型结论。返回 {decision:hold|none|review,closing_segment_ids:[],excluded_segment_ids:[],reason}。'
+                '视觉教学终点='+str(cut)+'；候选='+encode(candidates)+'；上下文='+encode(context)+'；相邻原帧='+encode([{k:e[k] for k in ('id','source_seconds')} for e in batch]))
+        local=self.typed('recognizer',prompt,ClosingChoice,self.paths(batch))
+        cloud=self.typed('supervisor',prompt,ClosingChoice,self.paths(batch))
+        self.result['ending_recognition']={'local':local.model_dump(),'independent_cloud':cloud.model_dump(),'candidates':candidates}
+        if local.decision!=cloud.decision or local.closing_segment_ids!=cloud.closing_segment_ids or local.excluded_segment_ids!=cloud.excluded_segment_ids:
+            raise NeedsReview('independent closing speech classification disagrees')
+        ending=validated_ending(local,candidates,cut,min(self.index.end_seconds,self.transcript.duration),self.cfg.max_ending_hold_seconds)
+        if not ending:return None
+        self.result['ending_proposal']=ending.model_dump()
+        self.result['ending_policy']='freeze_for_closing_speech'
+        return ending
 
     def classify(self, frame_numbers):
         batch=[self.sample(f) for f in frame_numbers]
@@ -322,6 +382,24 @@ class AutomaticAnalysis:
             self.result["blind_facts"]=blind
             if blind.get("issues") or compact(blind.get("title", ""))!=compact(proposal.title) or compact(blind.get("presenter") or "")!=compact(proposal.presenter or ""):
                 raise NeedsReview("independent cloud facts disagree with local recognition")
+            asr_name_ids=[i for i in proposal.presenter_evidence_ids if i.startswith('asr-')]
+            if proposal.presenter and asr_name_ids and not evidence_supports(proposal.presenter,asr_name_ids,texts):
+                # Add another actual source signature before resolving a transcription spelling difference.
+                signature_ids=[r.evidence_id for r in ordered if r.category=='presenter' and self.evidence[r.evidence_id]['source_seconds']<start['seconds']+30 and compact(proposal.presenter) in compact(r.visible_text)][:3]
+                if len(signature_ids)<2:raise NeedsReview('ASR/name spelling discrepancy needs additional visible signatures')
+                signatures=[self.evidence[i] for i in signature_ids]
+                prompt=('姓名证据补充核验：这些原片画面为同一本课开场的多个署名时间位置。独立逐张读取清晰署名，尚未给目标姓名。ASR是模型转写，不是原音频中文字形的证明；转写用字可能错误，不能反向改写清晰画面署名。'
+                        '如果各画面署名清晰一致，可依据画面记录姓名及采纳理由，保留原ASR不改写；画面之间冲突、角色不明或无法辨认必须review。'
+                        '返回 {presenter:null或姓名,decision:visible_signatures_agree|review,evidence_ids:实际清晰署名图ID列表,reason:逐项说明画面与ASR差异及采纳依据}。'
+                        '图片列表='+encode([{k:e[k] for k in ('id','source_seconds')} for e in signatures])+'；相关原ASR='+encode({i:texts[i] for i in asr_name_ids}))
+                local=self.typed('recognizer',prompt,PresenterResolution,self.paths(signatures))
+                cloud=self.typed('supervisor',prompt,PresenterResolution,self.paths(signatures))
+                self.result['presenter_resolution']={'local':local.model_dump(),'independent_cloud':cloud.model_dump(),'asr_original_ids':asr_name_ids,'asr_original_text':{i:texts[i] for i in asr_name_ids}}
+                for resolution in (local,cloud):
+                    if resolution.decision!='visible_signatures_agree' or compact(resolution.presenter or '')!=compact(proposal.presenter) or len(set(resolution.evidence_ids))<2 or not set(resolution.evidence_ids)<=set(signature_ids):
+                        raise NeedsReview('additional signature evidence did not resolve name discrepancy')
+                proposal=proposal.model_copy(update={'presenter_evidence_ids':signature_ids})
+                self.result['proposal']=proposal.model_dump()
             with self.store.session() as s:
                 j=s.get(Job,self.jid);intro_id=json.loads(j.result).get("intro_asset_id") or self.cfg.default_intro_asset_id
                 intro=s.get(Asset,intro_id) if intro_id else None
@@ -335,7 +413,10 @@ class AutomaticAnalysis:
             conflicts=speech_cut_conflicts(boundary_speech,{"start":start["seconds"],"end":end["seconds"]})
             if conflicts:
                 self.result['audio_boundary_conflicts']=conflicts
-                raise NeedsReview("high-confidence ASR word crosses proposed boundary")
+                if any(c['boundary']=='start' for c in conflicts):raise NeedsReview("high-confidence ASR word crosses proposed start boundary")
+            ending=self.closing_ending(end)
+            if conflicts and not ending:raise NeedsReview("high-confidence ASR word crosses proposed boundary")
+            if ending:required.add('closing_speech')
             parts=[]
             for name,boundary in [("start",start),("end",end)]:
                 boundary_batch=[self.evidence[i] for i in boundary["evidence_ids"]]
@@ -356,7 +437,9 @@ class AutomaticAnalysis:
             part=self.typed("supervisor",
                 "这是已独立读取事实、且起止相邻帧已单独审查后的计划核对。最后一张是已登记的广州开放大学片头参考，之前是原片标题/讲师署名证据。图号="+encode([{k:e[k] for k in ('id','frame','source_seconds')} for e in fact_batch])+
                 "。批准规则：清晰字幕/画面署名就是直接姓名证据，不要求另一独立来源；讲师任职单位可与片头学校不同，单位不同不构成姓名冲突。课名来自本课明确文字或口头说明，不能只因与系列主题相符就认为有依据。"
+                +('ASR姓名用字差异已补充多个实际署名帧并独立核验，采纳依据='+encode(self.result['presenter_resolution'])+'。保留原转写但不把识别器选字当作原音频自报另一名字的证明。请检查补充依据是否成立；若实际画面仍冲突则fail。' if self.result.get('presenter_resolution') else '')+
                 "计划="+encode({"title":proposal.title,"presenter":proposal.presenter,"origin":proposal.origin,"source_continuous_range":[start['seconds'],end['seconds']]})+
+                ('；已批准定格策略='+encode(ending.model_dump())+'，画面在视觉终点切除片尾，最后授课帧延续至audio_end；语音从授课起点连续保留至该时间。closing_speech检查须保留本课完整收束、排除下一课预告。独立分类结果='+encode(self.result['ending_recognition']) if ending else '')+
                 "；对应课名/姓名直接证据="+encode({i:texts[i] for i in proposal.title_evidence_ids+proposal.presenter_evidence_ids if i in texts})+
                 "；语音上下文="+encode(boundary_speech)+"。连续授课检查指计划保持单一源区间、未删中间内容，不声称逐帧识别整片。"
                 "只检查以下必需code，每个一次="+encode(sorted(fact_required))+"。返回严格JSON的Review对象，reason不要用未转义双引号。",Review,self.paths(fact_batch)+[ref_intro])
@@ -368,7 +451,7 @@ class AutomaticAnalysis:
             if not review_passed(review,required) or review.issues:
                 raise NeedsReview("refined plan did not pass every supervision check")
             plan=ConfirmedPlan(title=proposal.title,presenter=proposal.presenter,lecture={"start":start["seconds"],"end":end["seconds"]},
-                intro_asset_id=intro_id,fps=self.index.fps,reason="Automatic: direct title/name evidence, local word-timestamp ASR, adjacent-frame cuts and independent supervision passed")
+                ending=ending,intro_asset_id=intro_id,fps=self.index.fps,reason="Automatic: direct title/name evidence, local word-timestamp ASR, adjacent-frame cuts and independent supervision passed")
             self.result["style_reference_paths"]=[self.evidence[i]["path"] for i in proposal.style_evidence_ids[:1]]
             self.result["automatic_plan"]=plan.model_dump()
             self.result["source_frame_range"]=[start["first_after_frame"],end["first_after_frame"]]

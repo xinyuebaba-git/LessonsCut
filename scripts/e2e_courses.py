@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--data-dir',type=Path,default=Path('data/e2e-20261015'))
     parser.add_argument('--retry-job',help='Retry a stopped development job after fixing the reported cause; never changes plan evidence')
     parser.add_argument('--only-job')
+    parser.add_argument('--reanalyze-job',help='Create a new analysis revision after a user-approved policy change')
     args=parser.parse_args()
     root=args.data_dir.resolve();root.mkdir(parents=True,exist_ok=True)
     cfg=Settings(LESSONSCUT_DATA_DIR=root,LESSONSCUT_DATABASE_URL='sqlite:///'+str(root/'e2e.db'),LESSONSCUT_INPUT_ROOT=args.source_dir.resolve())
@@ -44,6 +45,10 @@ def main():
             if not j or j.token or j.state!='NEEDS_REVIEW':raise SystemExit('job is not a stopped development exception')
             s.add(Audit(job_id=j.id,revision=j.revision,event='Development retry after cause fixed; previous reason: '+j.reason))
             j.state='QUEUED';j.reason=''
+    if args.reanalyze_job:
+        j=client.get('/api/v1/jobs/'+args.reanalyze_job).json()
+        r=client.post('/api/v1/jobs/'+args.reanalyze_job+'/reanalyze',json={'base_revision':j['revision'],'reason':'User approved automatically freezing last teaching frame to retain complete closing speech; exclude outro speech'})
+        r.raise_for_status()
     stopped=threading.Event()
     def progress():
         while not stopped.wait(20):
@@ -76,8 +81,9 @@ def main():
             src=args.source_dir/f'{n}.mp4'
             summary.append({'number':int(n),'job_id':jid,'state':j.state,'reason':j.reason,
                 'source_unchanged':digest(src)==state['assets'][n]['sha256'],
-                'actual_source_frame_range':result.get('source_frame_range'),'historical_source_frame_range':b['source_lecture_frame_range'],
+                'actual_source_frame_range':result.get('expected',{}).get('source_frame_range') or result.get('source_frame_range'),'historical_source_frame_range':b['source_lecture_frame_range'],
                 'candidate_source_frame_range':result.get('candidate_source_frame_range'),'audio_boundary_conflicts':result.get('audio_boundary_conflicts',[]),
+                'ending':result.get('plan',{}).get('ending'),'ending_review':result.get('ending_review'),
                 'candidate':result.get('candidate'),'technical':result.get('technical'),'audio':result.get('audio'),
                 'plan_review':result.get('plan_review'),'title_review':result.get('title_review'),'export_review':result.get('export_review'),
                 'delivery_path':str(root/result['delivery_path']) if result.get('delivery_path') else None,

@@ -1,4 +1,5 @@
 import json
+import pytest
 from pathlib import Path
 from PIL import Image
 from lessonscut.config import Settings
@@ -9,16 +10,22 @@ from lessonscut.worker import run_once
 
 
 class FakeReviewProvider:
+    fail_final=False
     def __init__(self,*args):pass
     def chat(self,role,prompt,images):
-        assert role=='supervisor'
-        if prompt.startswith('核对标题图片'):codes=['title_text','presenter_text','no_extra_text','not_clipped','style_match']
-        elif prompt.startswith('成片片头标题复核'):codes=['intro_identity','title_text','presenter_text','no_extra_text','not_clipped']
+        assert role in ('recognizer','supervisor')
+        if self.fail_final and role=='supervisor' and prompt.startswith('成片标题文字复核'):
+            return {'decision':'fail','checks':[{'code':'title_text','decision':'fail','reason':'fixture review failure'}],'issues':['fixture failure'],'limits':'synthetic only'}
+        if prompt.startswith('核对标题图片'):codes=['title_text','presenter_text','no_extra_text','not_clipped']
+        elif prompt.startswith('核对标题风格'):codes=['style_match']
+        elif prompt.startswith('成片片头身份复核'):codes=['intro_identity']
+        elif prompt.startswith('成片标题文字复核'):codes=['title_text','presenter_text','no_extra_text','not_clipped']
         else:codes=['lecture_start','lecture_body','lecture_end','no_black_frame']
         return {'decision':'pass','checks':[{'code':c,'decision':'pass','reason':'synthetic fixture'} for c in codes],'issues':[],'limits':'synthetic samples only'}
 
 
-def test_confirmed_revision_to_real_mp4_with_mock_model_review(tmp_path,monkeypatch):
+@pytest.mark.parametrize('header_failure,tamper',[(False,False),(True,False),(True,True)])
+def test_confirmed_revision_to_real_mp4_with_mock_model_review(tmp_path,monkeypatch,header_failure,tamper):
     cfg=Settings(_env_file=None,LESSONSCUT_DATA_DIR=tmp_path/'data',LESSONSCUT_INPUT_ROOT=tmp_path/'input',LESSONSCUT_DATABASE_URL=f'sqlite:///{tmp_path}/db.sqlite')
     cfg.prepare();store=Store(cfg.database_url)
     source=tmp_path/'source.mp4'
@@ -32,8 +39,24 @@ def test_confirmed_revision_to_real_mp4_with_mock_model_review(tmp_path,monkeypa
     def small_render(*args,**kwargs):
         return real_render(*args,**kwargs,size=(320,180))
     monkeypatch.setattr('lessonscut.pipeline.render',small_render)
+    monkeypatch.setattr(FakeReviewProvider,'fail_final',header_failure)
     pipeline=Pipeline(cfg,store,FakeReviewProvider)
     assert run_once(cfg,store,pipeline)
+    if header_failure:
+        with store.session() as s:
+            job=s.get(Job,'job');assert job.state=='NEEDS_REVIEW'
+            result=json.loads(job.result);output=cfg.data_dir/result['render_path']
+            job.state='QUEUED'
+        monkeypatch.setattr(FakeReviewProvider,'fail_final',False)
+        if tamper:output.write_bytes(output.read_bytes()[:1000])
+        else:
+            def no_repeat(*args):raise AssertionError('successful same-hash decode should be reused')
+            monkeypatch.setattr('lessonscut.pipeline.verify_output',no_repeat)
+        assert run_once(cfg,store,pipeline)
+        if tamper:
+            with store.session() as s:assert s.get(Job,'job').state=='NEEDS_REVIEW'
+            assert not list((cfg.data_dir/'output').glob('*.mp4'))
+            return
     with store.session() as s:
         job=s.get(Job,'job');result=json.loads(job.result)
         assert job.state=='DELIVERED',job.reason
