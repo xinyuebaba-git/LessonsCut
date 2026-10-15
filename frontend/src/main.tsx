@@ -1,0 +1,37 @@
+import React, {useEffect, useState} from 'react';
+import {createRoot} from 'react-dom/client';
+import './style.css';
+
+type Asset={id:string,name:string,kind:string};
+type Candidate={title:string,presenter:string|null,lecture:{start:number,end:number},style_description:string};
+type Job={id:string,asset_id:string,revision:number,state:string,reason:string,result:{candidate?:Candidate,evidence?:{id:string,source_seconds:number}[]}};
+
+function App(){
+ const [token,setToken]=useState(sessionStorage.getItem('lessonscut-token')||'');
+ const [assets,setAssets]=useState<Asset[]>([]),[jobs,setJobs]=useState<Job[]>([]),[selected,setSelected]=useState<string[]>([]);
+ const [active,setActive]=useState<Job|null>(null),[error,setError]=useState(''),[notice,setNotice]=useState('');
+ const [title,setTitle]=useState(''),[presenter,setPresenter]=useState(''),[start,setStart]=useState(''),[end,setEnd]=useState(''),[intro,setIntro]=useState(''),[image,setImage]=useState(''),[reason,setReason]=useState(''),[fps,setFps]=useState('30/1');
+ async function request(path:string,init:RequestInit={}){
+  const headers=new Headers(init.headers);headers.set('Authorization',`Bearer ${token}`);
+  if(init.body && !(init.body instanceof FormData))headers.set('Content-Type','application/json');
+  const r=await fetch(`/api/v1${path}`,{...init,headers});
+  if(!r.ok){const text=await r.text();throw new Error(`${r.status}: ${text.slice(0,300)}`)}return r;
+ }
+ async function refresh(){try{const [a,j]=await Promise.all([request('/assets'),request('/jobs')]);setAssets(await a.json());setJobs(await j.json());setError('')}catch(e){setError(String(e))}}
+ useEffect(()=>{if(!token)return;sessionStorage.setItem('lessonscut-token',token);void refresh();const timer=setInterval(()=>void refresh(),5000);return()=>clearInterval(timer)},[token]);
+ async function upload(files:FileList|null,kind:string){if(!files)return;try{for(const file of Array.from(files)){const form=new FormData();form.append('file',file);await request(`/assets/uploads?kind=${kind}`,{method:'POST',body:form})}await refresh();setNotice('素材已入库')}catch(e){setError(String(e))}}
+ async function batch(){try{await request('/batches',{method:'POST',headers:{'Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({asset_ids:selected})});setSelected([]);await refresh();setNotice('任务已入队，请确保 Worker 已启动')}catch(e){setError(String(e))}}
+ function open(j:Job){setActive(j);const c=j.result.candidate;setTitle(c?.title||'');setPresenter(c?.presenter||'');setStart(String(c?.lecture.start??''));setEnd(String(c?.lecture.end??''));setReason('');setFps('30/1')}
+ async function confirm(){if(!active)return;try{const result=await request(`/jobs/${active.id}/revisions`,{method:'POST',body:JSON.stringify({base_revision:active.revision,plan:{title,presenter:presenter||null,lecture:{start:Number(start),end:Number(end)},intro_asset_id:intro,title_asset_id:image||null,title_seconds:1.5,fps,reason}})});const data=await result.json();setActive(null);setNotice(`修订 ${data.revision} 已进入渲染队列`);await refresh()}catch(e){setError(String(e))}}
+ async function preview(j:Job,eid:string){try{const r=await request(`/jobs/${j.id}/evidence/${eid}`);const url=URL.createObjectURL(await r.blob());window.open(url,'_blank','noopener');setTimeout(()=>URL.revokeObjectURL(url),60000)}catch(e){setError(String(e))}}
+ async function download(j:Job){try{const r=await request(`/jobs/${j.id}/delivery`);const url=URL.createObjectURL(await r.blob());const a=document.createElement('a');a.href=url;a.download=`${j.id}-r${j.revision}.mp4`;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000)}catch(e){setError(String(e))}}
+ return <><header><div><b>LessonsCut</b><span>课程视频批量剪辑 · 开发预览 0.1</span></div><label>管理令牌<input aria-label="管理令牌" type="password" value={token} onChange={e=>setToken(e.target.value)}/></label></header><main>
+  <section className="intro"><small>广州开放大学 · 课程制作</small><h1>把连续授课，整理成标准课程。</h1><p>统一 6 秒片头、1.5 秒标题页，保留授课原声。识别提案经确认后渲染，并对实际成片复核。</p></section>
+  {error&&<p role="alert" className="error">{error}</p>}{notice&&<p role="status" className="notice">{notice}</p>}
+  <section className="card"><h2>素材库</h2><div className="actions"><label className="upload">导入课程 / 片头视频<input aria-label="上传视频" type="file" multiple accept="video/*" onChange={e=>void upload(e.target.files,'video')}/></label><label className="upload">导入已批准标题图<input aria-label="上传标题图" type="file" accept="image/*" onChange={e=>void upload(e.target.files,'image')}/></label></div>
+  {!assets.length?<p className="muted">连接后上传视频，勾选需要处理的课程。片头视频无需加入课程任务。</p>:<div className="asset-list">{assets.map(a=><label key={a.id}><input type="checkbox" disabled={a.kind!=='video'} checked={selected.includes(a.id)} onChange={e=>setSelected(e.target.checked?[...selected,a.id]:selected.filter(x=>x!==a.id))}/>{a.name}<small>{a.kind==='image'?'标题图片':'视频'}</small></label>)}</div>}<button disabled={!selected.length} onClick={()=>void batch()}>创建批量任务（{selected.length}）</button></section>
+  <section className="card"><h2>处理任务</h2><p className="muted">本阶段所有切点需确认；不明确的内容不会自动进入交付。</p>{!jobs.length?<p>暂无任务</p>:<table><thead><tr><th>课程</th><th>状态</th><th>说明</th><th>操作</th></tr></thead><tbody>{jobs.map(j=><tr key={j.id}><td>{assets.find(a=>a.id===j.asset_id)?.name||j.id.slice(0,8)}<small>修订 {j.revision}</small></td><td><span className="badge">{j.state}</span></td><td className="reason">{j.reason}</td><td>{j.state==='DELIVERED'?<button onClick={()=>void download(j)}>下载成片</button>:<button disabled={j.state==='RUNNING'} onClick={()=>open(j)}>核对计划</button>}</td></tr>)}</tbody></table>}</section>
+  {active&&<section className="card editor"><h2>核对标题与切点</h2><p className="muted">请核对源视频与相邻帧，确认讲解完整。保存会创建新修订，旧复核不可用于新修订。</p><div className="grid"><label>课程标题<input value={title} onChange={e=>setTitle(e.target.value)}/></label><label>主讲人（无证据可留空）<input value={presenter} onChange={e=>setPresenter(e.target.value)}/></label><label>授课起点 / 源秒<input type="number" min="0" step="0.001" value={start} onChange={e=>setStart(e.target.value)}/></label><label>授课终点 / 源秒<input type="number" min="0" step="0.001" value={end} onChange={e=>setEnd(e.target.value)}/></label><label>已批准 6 秒片头<select value={intro} onChange={e=>setIntro(e.target.value)}><option value="">请选择</option>{assets.filter(a=>a.kind==='video').map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select></label><label>标题页<select value={image} onChange={e=>setImage(e.target.value)}><option value="">Qwen-Image 3.0 生成（需要已有风格识别证据）</option>{assets.filter(a=>a.kind==='image').map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select></label><label>确认输出帧率<select value={fps} onChange={e=>setFps(e.target.value)}><option>30/1</option><option>25/1</option><option>30000/1001</option><option>24/1</option><option>60/1</option></select></label><label>确认依据<input placeholder="说明标题及切点的核对依据" value={reason} onChange={e=>setReason(e.target.value)}/></label></div><div className="evidence">{active.result.evidence?.map(e=><button key={e.id} onClick={()=>void preview(active,e.id)}>源 {e.source_seconds.toFixed(2)}s</button>)}</div><button disabled={!title||!intro||!reason||!start||!end} onClick={()=>void confirm()}>确认并生成新修订</button><button className="secondary" onClick={()=>setActive(null)}>关闭</button></section>}
+ </main><footer>本地 Qwen3.8 · MiniMax M3 监督 · 阿里 Qwen-Image 3.0 · 原文件不覆盖</footer></>
+}
+createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

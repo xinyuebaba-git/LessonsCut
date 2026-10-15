@@ -5,5 +5,8 @@
 - [设计文档入口](docs/course-video-app/README.md)
 - [智能体技能](skills/course-video-batch-edit/SKILL.md)
 - [开发环境决策](docs/course-video-app/development-environment.md)
+- [0.1开发版本：启动、测试与已知限制](docs/DEVELOPMENT.md)
 
-设计文档已完成。开发环境采用现有 RTX 3090 24GB 和 Qwen3.8 多模态服务，MiniMax 官方 API 负责任务监督、图片复核与标题生图；未来可迁移至 RTX 4090。凭据不进入版本库。
+开发环境采用现有 RTX 3090 24GB 和 Qwen3.8 多模态服务，MiniMax 官方 M3 API 负责任务监督与图片复核，阿里云百炼 `qwen-image-3.0` 负责标题生图；未来可迁移至 RTX 4090。凭据不进入版本库。
+
+0.1已实现基础管理界面、持久化批量任务、模型适配、人工确认计划及媒体渲染验证；完整自动边界识别与生产部署仍在后续里程碑。
