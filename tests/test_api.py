@@ -80,4 +80,4 @@ def test_reanalysis_creates_new_revision_and_invalidates_previous_output(client)
     assert c.post(f'/api/v1/jobs/{jid}/reanalyze',json=payload).json()['revision']==2
     assert c.post(f'/api/v1/jobs/{jid}/reanalyze',json=payload).status_code==409
     result=c.get(f'/api/v1/jobs/{jid}').json()
-    assert result['stage']=='analyze' and result['result']=={'intro_asset_id':'intro'}
+    assert result['stage']=='analyze' and result['result']=={'intro_asset_id':'intro','config_version':1}

@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     dashscope_api_key: SecretStr = SecretStr("")
     qwen_image_model: str = "qwen-image-3.0"
     qwen_image_size: str = "1920x1080"
+    recognizer_protocol: str = "openai"
+    supervisor_protocol: str = "minimax"
+    role_timeouts: dict[str, int] = {}
+    role_call_limits: dict[str, int] = {}
+    title_style_fallback: bool = True
+    title_fallback_style: str = "16:9课程标题页，米白色背景，墨绿色中文标题居中，宋体风格，留足安全边距；仅显示批准的课名及已核实主讲人，不加机构、系列、栏目或logo。"
     max_calls_per_job: int = Field(default=160, ge=1, le=500, validation_alias="LESSONSCUT_MAX_CALLS_PER_JOB")
     automatic_plan_approval: bool = Field(default=True, validation_alias="LESSONSCUT_AUTOMATIC_PLAN_APPROVAL")
     default_intro_asset_id: str | None = Field(default=None, validation_alias="LESSONSCUT_DEFAULT_INTRO_ASSET_ID")

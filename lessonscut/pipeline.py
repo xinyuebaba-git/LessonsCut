@@ -25,6 +25,14 @@ class Pipeline:
                 prompt+='\n上一答复格式错误，仅修正格式、不改变证据和判断：'+str(exc)[:1000]
 
     def execute(self,job_id,revision,token):
+        from .profiles import Profiles
+        with self.store.session() as s:
+            metadata=json.loads(s.get(Job,job_id).result)
+        cfg=Profiles(self.settings,self.store).effective(metadata['config_version']) if metadata.get('config_version') else self.settings
+        # Separate instance per claimed revision; no process-wide mutable settings.
+        return Pipeline(cfg,self.store,self.providers_factory)._execute(job_id,revision,token)
+
+    def _execute(self,job_id,revision,token):
         with self.store.session() as s:
             job=s.get(Job,job_id);source=s.get(Asset,job.asset_id)
             source_path,source_hash=source.path,source.sha256
@@ -37,11 +45,15 @@ class Pipeline:
         work=self.settings.data_dir/"work"/job_id/str(revision)
         work.mkdir(parents=True,exist_ok=True)
         p=self.providers_factory(self.settings,self.store,job_id,revision)
-        if stage=="analyze":
-            plan,analysis=AutomaticAnalysis(self.settings,self.store,job_id,revision,token,Path(source_path),p,work).run(job.asset_id)
-            self.produce(job_id,revision,token,Path(source_path),source_hash,plan,analysis,p,work)
-        else:
-            self.produce(job_id,revision,token,Path(source_path),source_hash,ConfirmedPlan.model_validate(saved_plan),old,p,work)
+        try:
+            if stage=="analyze":
+                plan,analysis=AutomaticAnalysis(self.settings,self.store,job_id,revision,token,Path(source_path),p,work).run(job.asset_id)
+                self.produce(job_id,revision,token,Path(source_path),source_hash,plan,analysis,p,work)
+            else:
+                self.produce(job_id,revision,token,Path(source_path),source_hash,ConfirmedPlan.model_validate(saved_plan),old,p,work)
+        finally:
+            client=getattr(p,'client',None)
+            if client is not None:client.close()
 
     def check_ending(self,jid,rev,source,output,plan,old,p,work,expected):
         if not plan.ending:return None
@@ -87,6 +99,9 @@ class Pipeline:
         if digest(intro_path)!=intro_hash:
             raise ValueError("intro changed since registration")
         style=old.get("candidate",{}).get("style_description","")
+        if not style and self.settings.title_style_fallback:
+            style=self.settings.title_fallback_style
+            old={**old,'title_style_source':'configured_template'}
         if title_path:
             if not title or title.kind!="image" or digest(title_path)!=title_hash:
                 raise ValueError("registered title image invalid or changed")
@@ -99,7 +114,7 @@ class Pipeline:
         references=[self.settings.data_dir/x for x in old.get("style_reference_paths",[])][:1]
         for attempt in range(1 if title_path else 3):
             if not title_path:
-                if not style:raise ValueError("source title style evidence missing; upload an approved title image")
+                if not style:raise ValueError("source title style evidence missing; confirm style or enable the configured fallback template")
                 repair="" if attempt==0 else "；上一版复核失败，必须修正："+json.dumps(title_review.model_dump(),ensure_ascii=False)
                 title=p.generate_title(plan.title,plan.presenter,style+repair,work/f"title-{attempt}.png",reference_images=references)
             content_parts=[self.reviewed(p,rubric,[title],role=role) for role in ('recognizer','supervisor')]

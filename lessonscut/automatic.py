@@ -34,8 +34,8 @@ class Proposal(StrictModel):
     title_evidence_ids: list[str] = Field(min_length=1)
     presenter_evidence_ids: list[str]
     presenter_status: Literal["verified", "absent", "uncertain"]
-    style_evidence_ids: list[str] = Field(min_length=1)
-    style_description: str = Field(min_length=1, max_length=1000)
+    style_evidence_ids: list[str]
+    style_description: str = Field(max_length=1000)
     conflicts: list[str]
 
 
@@ -164,6 +164,7 @@ class AutomaticAnalysis:
         with store.session() as s:
             initial=json.loads(s.get(Job,jid).result)
         self.result={"automation_version":"0.2", "intro_asset_id":initial.get("intro_asset_id"), "approval_policy":initial.get("approval_policy","exceptions_only"), "evidence":[], "observations":[]}
+        self.result.update({k:initial[k] for k in ('config_version','batch_name') if k in initial})
         self.transcript=None
 
     def save(self, phase):
@@ -360,7 +361,11 @@ class AutomaticAnalysis:
             # Course-content slides do not replace the original opening title design.
             opening_titles=[r for r in ordered[:first] if r.category in {"lesson_title","series_title"}]
             opening_ids={r.evidence_id for r in opening_titles}
-            if opening_titles and not set(proposal.style_evidence_ids)<=opening_ids:
+            if not opening_titles:
+                if not self.cfg.title_style_fallback:raise NeedsReview('no opening style reference; configured fallback is disabled')
+                proposal=proposal.model_copy(update={'style_evidence_ids':[],'style_description':self.cfg.title_fallback_style})
+                self.result['title_style_source']='configured_template'
+            elif not proposal.style_evidence_ids or not proposal.style_description or not set(proposal.style_evidence_ids)<=opening_ids:
                 style_batch=[self.evidence[r.evidence_id] for r in opening_titles[:6]]
                 chosen=self.typed("recognizer","标题风格独立选择：以下是正式真人授课之前的原片标题候选。选文字/设计已完整出现、适合模仿构图配色字体的一张，不用授课PPT替代原片标题页。只描述视觉风格；生成时全部原文字会由批准课名/姓名替换。返回 {style_evidence_ids:[],style_description}。候选="+encode([{k:e[k] for k in ('id','source_seconds')} for e in style_batch]),TitleStyle,self.paths(style_batch))
                 if not set(chosen.style_evidence_ids)<={e['id'] for e in style_batch}:raise NeedsReview('opening title style evidence invalid')

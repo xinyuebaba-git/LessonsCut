@@ -9,6 +9,7 @@
 - [0.2自动切点与本地语音识别](docs/AUTOMATION.md)
 - [初轮：1号自动交付与3号异常拦截验证](docs/automation-checks-20261015.md)
 - [3号收束语定格与实际成片验证](docs/ending-hold-checks-20261015.md)
+- [批量工作台：模型配置、登录与逐课标题生成](docs/workbench-20261016.md)
 
 开发环境采用现有 RTX 3090 24GB 和 Qwen3.8 多模态服务，MiniMax 官方 M3 API 负责任务监督与图片复核，阿里云百炼 `qwen-image-3.0` 负责标题生图；未来可迁移至 RTX 4090。凭据不进入版本库。
 

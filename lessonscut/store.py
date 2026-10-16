@@ -79,6 +79,25 @@ class Audit(Base):
     created: Mapped[float] = mapped_column(Float, default=time.time)
 
 
+class ConfigurationVersion(Base):
+    __tablename__ = "configuration_versions"
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data: Mapped[str] = mapped_column(Text)
+    created: Mapped[float] = mapped_column(Float, default=time.time)
+
+
+class ConfigurationHead(Base):
+    __tablename__ = "configuration_head"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer)
+
+
+class LoginSession(Base):
+    __tablename__ = "login_sessions"
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires: Mapped[float] = mapped_column(Float)
+
+
 class Store:
     def __init__(self, url):
         self.engine = create_engine(url, connect_args={"check_same_thread": False, "timeout": 30} if url.startswith("sqlite") else {})
